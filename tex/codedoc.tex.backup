@@ -1,0 +1,286 @@
+\documentclass{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+
+% Layout
+\usepackage{geometry}
+\geometry{
+  left=2.5cm,
+  right=2.5cm,
+  top=2cm,
+  bottom=4cm,
+  bindingoffset=5mm
+}
+
+\usepackage[numbered,framed]{matlab-prettifier}
+
+% Headers
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+
+\chead[fMRI joint reconstruction]{fMRI joint reconstruction}
+
+\newcommand{\mat}[1]{\lstinline[style=Matlab-editor]{#1}}
+
+\newcommand{\TV}{\mathrm{TV}}
+\newcommand{\C}{\mathbb{C}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Rplus}{\mathbb{R}_+}
+\newcommand{\ICBTV}{\mathrm{ICB}_\TV}
+
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\ubold}{\mathbf{u}}
+\newcommand{\vbold}{\mathbf{v}}
+
+\newcommand{\pa}{p^{\mathrm{art}}}
+\newcommand{\qa}{q^{\mathrm{art}}}
+
+\newcommand{\diverg}{\mathrm{div}}
+
+\newcommand{\Kcal}{\mathcal{K}}
+\newcommand{\Lcal}{\mathcal{L}}
+\newcommand{\Fcal}{\mathcal{F}}
+\newcommand{\Scal}{\mathcal{S}}
+\newcommand{\Pcal}{\mathcal{P}}
+
+\newcommand{\Real}{\mathrm{Re}}
+\newcommand{\Imag}{\mathrm{Im}}
+
+\newcommand{\qt}{\tilde{q}}
+
+
+% Environments
+\newtheorem{mydef}{Definition}
+\newtheorem{mythm}{Theorem}
+\newtheorem{myprop}{Proposition}
+\newtheorem{mylem}{Lemma}
+\newtheorem{myrem}{Remark}
+
+% lstlistings
+\lstset{
+  style              = Matlab-editor,
+%   basicstyle         = \mlttfamily,
+  escapechar         = ",
+  mlshowsectionrules = true,
+}
+
+\begin{document}
+\title{Code documentation \\ Version 1.1} 
+\author{Julian Rasch}
+
+\maketitle
+
+% \section{General setting}
+% Let us first fix the notation.
+% \begin{enumerate}
+%  \item The inverse problem for the anatomical prior $u_0$ is $\Kcal_0 u_0 = f_0$.
+%       Its necessary subgradient is $p_0 \in \partial \TV(u_0)$.
+%    The sampling operator $\Kcal_0$ should provide a sampling such that the $u_0$ is a really good reconstruction. 
+%  \item The inverse problems for the series are $\Kcal_i u_i = f_i$ for $i = 1, \dots, T$.
+%    The sampling operators here should do undersampling of the data $f_i$.
+% \end{enumerate}
+
+\section{The anatomical prior and its reconstruction}
+We shall start with an explanation of the acquisition and reconstruction scheme for the anatomical prior.
+
+\subsection{Operator modeling and the method}
+In order to clarify the code, we need to further specify the sampling operator for the anatomical prior.
+We follow the ideas of [Ehrhardt, Betcke].
+First, and most important, we restrict the prior to be real-valued (otherwise it is not directly clear how to define gradients, subgradients etc. for the reconstruction, see remark below), i.e. $u_0 \in \R^{N_0}$ . 
+However, since the Fourier transform acts on complex-valued images, we need to embed our image into the complex numbers $\C^{N_0}$ via the embedding operator 
+\begin{align*}
+ i \colon \R^{N_0} \to \C^{N_0}, u_0, \quad u\mapsto u + 0i.
+\end{align*}
+It is the adjoint operator of the real part restriction, i.e. $i^*(x + iy) = \Real(x + iy) = x$, for $x,y \in \R^{N_0}$. 
+We then apply a standard Cartesian Fourier transform to the embedded image. 
+In order to simulate an arbitrary MR acquisition protocol, we do not use all the Fourier coefficients, but a sampling operator $\Scal_0 \colon \C^{N_0} \to \C^{M_0}$ to only choose a subset of the Fourier coefficients. 
+For practical use, only the situation of undersampling, i.e. ${M_0} \ll {N_0}$ is relevant. 
+Hence, if we let $\Pcal \colon \{1,\dots,{M_0}\} \to \{1,\dots,{N_0}\}$ be a mapping which chooses ${M_0}$ Fourier coefficients from the $N_0$ coefficients available, we can define the sampling operator $\Scal_0$ applied to $z \in \C^{N_0}$ 
+\begin{align*}
+ \Scal_0 \colon \C^{N_0} \to \C^{M_0}, \quad (\Scal_0 x)_k = z_{\Pcal(k)}.
+\end{align*}
+The full forward operator $\Kcal_0$ can hence be expressed as 
+\begin{align}
+\label{eq:pr_forward_op}
+ \Kcal_0 \colon \R^{N_0} \xrightarrow{i} \C^{N_0} \xrightarrow{\Fcal} \C^{N_0} \xrightarrow{\Scal_0} \C^{M_0}.
+\end{align}
+Its adjoint is 
+\begin{align}
+\label{eq:pr_adjoint_op}
+ \Kcal_0^* \colon \C^{M_0} \xrightarrow{\Scal_0^*} \C^{N_0} \xrightarrow{\Fcal^{-1}} \C^{N_0} \xrightarrow{i^*} \R^{N_0},
+\end{align}
+where $\Scal_0^*$ `fills' the missing frequencies with zeros, i.e. 
+\begin{align*}
+ \Scal_0^*(z) = \sum_{k=1}^{M_0} z_k \delta_{k,\Pcal(k)}.
+\end{align*}
+%
+\begin{myrem}
+ Note that applying $\Scal_0^*$ is equivalent to the minimum norm solution restricted to the real part, hence can be used as a `standard inversion' for comparison.
+\end{myrem}
+
+
+In order to get a piecewise constant reconstruction of the prior to use its gradient information, we perform a total variation regularized reconstruction. 
+\begin{align}
+   \min_{u_0 \in \R^{N_0}} \frac{\alpha_0}{2} \| \Kcal_0 u_0 - f_0\|_\C^2 + \TV(u_0),
+   \label{eq:l2_tv}
+\end{align}
+where $\TV(u_0) = \| \nabla u_0 \|_1$ with a discrete gradient operator $\nabla \colon \R^{N_0} \to \R^{N_0 \times 2}$ (cf. [Chambolle]).
+Hence 
+\begin{align*}
+ \TV(u_0) = \| \nabla u_0 \|_1 = \sum_{k=1}^{N_0} \sqrt{ |\nabla u_0|^2_{k,1} + |\nabla u_0|^2_{k,2} }.
+\end{align*}
+After the reconstruction, we can update the subgradient via the optimality condition: 
+\begin{align}
+ p_0 = \frac{1}{\alpha_0} \Kcal_0^* ( f_0 - \Kcal_0 u_0).
+ \label{eq:pr_subgradient}
+\end{align}
+%
+\begin{myrem}
+ It is also possible to define the operator $\Kcal_0$ not on $\R^{N_0}$ but on $\C^{N_0}$, and perform the reconstruction with the constraint that $u_0$ is real-valued. 
+ However, then there is no accessible optimality condition which allows to get a subgradient. 
+\end{myrem}
+%
+A general problem with this subgradient is, due to its relation to the residual, it contains noise. 
+For standard Bregman iterations this is desirable [Burger, Osher], however, here it is questionable, why `noise' should be transferred from the prior to the following dynamic reconstruction.
+Therefore, we provide an alternative solution, an artificial `subgradient'.
+Recall, that $p_0 \in \partial \TV(u_0)$ if and only if there exists $q_0 \in \partial \|\nabla u_0\|_1$ such that $p_0 = - \diverg(q_0)$.
+In particular we have that 
+\begin{align*}
+ q_0 \begin{cases}
+        = \nabla u_0 / |\nabla u_0|, &\text{ if } \nabla u_0 \neq 0, \\
+        \in B(0,1), &\text{ else. }
+       \end{cases}
+\end{align*}
+Hence, having a good reconstruction $u_0$ of the prior at hand, we can create an artificial one by letting 
+\begin{align*}
+ \qt_0 = \begin{cases}
+        \nabla u_0 / |\nabla u_0|, &\text{ if } \nabla u_0 \neq 0, \\
+        0, &\text{ else. }
+       \end{cases}
+\end{align*}
+However, in view of not entirely perfect reconstructions in the numerical situation, it is preferable to decide, which height a jump has to have to become an edge.
+Hence, introducing the edge parameter $\eta$, we have 
+\begin{align*}
+ \qt_{0,\eta} = \begin{cases}
+        \nabla u_0 / |\nabla u_0|, &\text{ if } |\nabla u_0| \geq \eta, \\
+        0, &\text{ else. }
+       \end{cases}
+\end{align*}
+Then, finally, $p_0 = -\diverg(q_0)$ or $\tilde{p}_{0,\eta} = -\diverg (\qt_{0,\eta})$, respectively. 
+We shall however simply refer to the subgradient as $p_0$, independently of the choice of $q_0$.
+Comparing the different choices of gradients we notice, that the `artificial' subgradients are basically a `clean' version of $p_0$.
+
+\subsection{Numerical realization}
+The above considerations can be found in this code toolbox. 
+We shall start with the operator $\Kcal_0$ and its adjoint $\Kcal_0^*$.
+
+\begin{itemize}
+ \item \mat{sampling_geom.m:} This function can create a lot of possible sampling pattern for the MR as a binary map, i.e. represents the operator $\Scal_0$. 
+ For the prior, good choices are a \mat{'full'} sampling, or a sufficiently dense sampling on radial \mat{'spokes'} through the $k$-space center. 
+ The sampling can be created with the call \mat{S\_0 = sampling\_geom(u0,'full');} or \mat{S\_0 = sampling\_geom(u0,'spokes1','nSpokes',n);}, where \mat{n} is the desired number of spokes. 
+ Other samplings can be called identically, just check the documentation of the function, including a lot of options like number of sampling points and many more. 
+ The input \mat{u0} is only used for the size of the Fourier transform, hence can also be a dummy.
+ 
+ \item \mat{sampling_op.m:} Once you have generated a sampling for $\Scal_0$ via \mat{sampling_geom.m}, you can create a function handle for the operator $\Kcal_0$, i.e.  a Fourier transform followed by a projection onto the frequencies specified in $\Scal_0$ (or \mat{S_0}). 
+ The syntax is \mat{K\_0 = @(x) sampling_op(x,S_0);}.
+ 
+ \item \mat{sampling_adj.m:} This function is the adjoint operator $\Kcal_i^*$, and can be called analogously.
+ 
+ \item \mat{sampling_vis.m:} This function can visualize the sampling via \mat{sampling_vis(S_0);}.
+\end{itemize}
+
+If we use artificial data made from a phantom, we can use the forward operator $\Kcal_0$ to create some data $f_0$ from the clean phantom $u_0^{\mathrm{clean}}$. 
+\begin{itemize}
+ \item \mat{fourier_data.m:} This function creates noisy and undersampled Fourier data from a clean phantom $u_0^{\mathrm{clean}}$.   
+ The ratio of energy of the noise and energy of the data can be chosen by the parameter \mat{energy}. 
+ The function call is \mat{f0 = fourier_data(K_0\{1,1\},u0_clean,energy);}.
+ You can also visualize the data and how it is sampled via \mat{sampling_vis(f0);}.
+\end{itemize}
+Finally we can do the reconstruction \eqref{eq:l2_tv}. 
+\begin{itemize}
+ \item \mat{l2_tv.m:} This function solves \eqref{eq:l2_tv} with a primal-dual scheme and monitors the decrease of the primal energy as well as the primal-dual residual. 
+ We can set a few options via the script \mat{paramfile_tv.m}. 
+ \lstinputlisting{matlab_includes/c_paramfile_tv.m}
+ The stopping criterion is a sufficiently small primal-dual residual [Ref], we can increase the accuracy of the solution by lowering the tolerance \mat{pdtol}.
+ The value of \mat{niter} controls the amount of iterations, while \mat{int} controls the intervals in which the primal energy and the primal-dual residual is evaluated.
+ If \mat{show} is set to \mat{true}, the function plots the progress of the energy and the residual after convergence.
+ The parameters \mat{tau} and \mat{sigma} are the step sizes for the algorithm.
+\end{itemize}
+
+After convergence, we need to compute a subgradient, either via the optimality condition, or an artificial one. 
+This is done via the function \mat{artificial_subgradient.m}.
+The whole procedure is summarized in the following code: 
+\lstinputlisting{matlab_includes/c_prior.m}
+%
+It is interesting to visually compare \mat{p_true} and \mat{p_art}, in particular it gives an indicator of how big we need to choose the edge parameter \mat{eta}. 
+Just make sure that \mat{p_art} resembles \mat{p_true} without noise.
+
+
+\section{The dynamic scan}  
+Now we can proceed to the dynamic scans, which basically follow the same idea as before. 
+The operator $\Kcal_t$ and its adjoint $\Kcal_t^*$ can be defined analogously via 
+\begin{align}
+ \Kcal_t \colon \R^N \xrightarrow{i} \C^N \xrightarrow{\Fcal} \C^N \xrightarrow{\Scal_t} \C^{M_t}
+\end{align}
+and 
+\begin{align}
+ \Kcal_t^* \colon \C^{M_t}  \xrightarrow{\Scal_t^*} \C^{N} \xrightarrow{\Fcal^{-1}} \C^N \xrightarrow{i^*} \R^N.
+\end{align}
+%
+\begin{myrem}
+ We would like to remark that we keep $N$ fixed for the dynamic scans, implying that the resolution of the $u_t$ stays the same over time. 
+ We however theoretically keep the possibility that $N_0 > N$, i.e. that the prior has a higher resolution. 
+ This would involve some downsampling techniques after the computation of the subgradient $p_0$.
+ Furthermore, in general $M_t$ will be much smaller than $M_0$ such that the acquisition is sufficiently fast.
+\end{myrem}
+%
+The reconstruction of the dynamic series then can be done via the following reconstruction scheme:
+\begin{align}
+   \arg \min_{\ubold} \sum_{t=1}^T \frac{\alpha_t}{2} \| \Kcal_t u_t - f_t\|_\C^2 + w_t \TV(u_t) + (1-w_t) \ICBTV^{p_0}(u_t, u_0 ) + \sum_{t=1}^{T-1} \frac{\gamma_t}{2} \| u_{t+1} - u_t \|^2,
+   \label{eq:jr_fmri}
+\end{align}
+where $\ubold = [u_1, \dots, u_T]$ and $u_t \in \R^N$ for all $t = 1, \dots, T$.
+We need to choose three sets of parameters: the regularization parameters $\alpha_t$ and $\gamma_t$, which control the tradeoff between data fidelity, temporal regularization, and $w_i \in [0,1]$, which controls the amount of total variation regularization versus similarity to the prior. 
+They can be chosen equally for all time steps $t$, but can as well be adapted to when the activation is expected.
+
+\subsection{Creating the operators}
+The operators can be created the same way as above. 
+The difference is that we now want to perform undersampling, i.e. we need to pick a different sampling scheme. 
+A particularly interesting one is a sampling on radial spokes that are chosen according to the golden ratio [ref]. 
+More precisely, we divide $\pi$ by the golden ratio $r = \frac{1 + \sqrt{5}}{2}$ to obtain 
+\begin{align*}
+ \frac{\pi}{r}  = \frac{2 * \pi}{1 + \sqrt{5}} \approx 1.9416.
+\end{align*}
+Then we choose the $k$-th spoke according to the angle 
+\begin{align*}
+ \varphi_k = \frac{k \pi}{r} \mod 2 \pi.
+\end{align*}
+This consecutively fills the entire $k$-space in an interleaving fashion.
+For example, choosing 10 spokes per time step, we use spokes with the angles $\{\varphi_1, \dots, \varphi_{10} \}$ for time step $t=1$, and continue with angles $\{\varphi_{11}, \dots, \varphi_{20} \}$ for $t = 2$ and so on.
+The same way as before, we can also create noisy data according to the respective sampling. 
+We summarize the procedure in the following code: 
+\lstinputlisting{matlab_includes/c_dyndata.m}
+%
+If $T$ is high, i.e. the number of time steps, for computational reasons it is smarter to divide the data set into {\it ascending and overlapping} bits $T_l$, i.e. $T_1 = \{1,\dots,10\}$, $T_2 = \{10,\dots,20\}$ and so on, such that we solve 
+\begin{align}
+   \arg \min_{\ubold} \sum_{t\in T_l} \frac{\alpha_t}{2} \| \Kcal_t u_t - f_t\|_\C^2 + w_t \TV(u_t) + (1-w_t) \ICBTV^{p_0}(u_t, u_0 ) + \sum_{t\in T_l \setminus \max\{T_l\}} \frac{\gamma_t}{2} \| u_{t+1} - u_t \|^2.
+   \label{eq:jr_fmri_bits}
+\end{align}
+We can then choose the reconstruction parameters for every set (note that this is an arbitrary choice here, and that the regularization parameters can of course also vary within the sets).
+\lstinputlisting{matlab_includes/c_parameters.m}
+
+The last thing to do is to run the reconstruction: 
+\lstinputlisting{matlab_includes/c_recon.m}
+
+\section{Evaluation}
+This section is dedicated to the evaluation of the results. 
+I have some code available, which is however not perfect yet, and maybe not needed exactly now. 
+I will add this as soon as we have figured out a nice way to visualize everything.
+
+ 
+
+
+
+
+\end{document}
